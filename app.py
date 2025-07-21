@@ -7,6 +7,12 @@ from flask import Flask, jsonify
 from msal import ConfidentialClientApplication
 import requests
 
+import mimetypes
+import fitz  # PyMuPDF
+from docx import Document
+from io import BytesIO
+
+
 app = Flask(__name__)
 
 TENANT_ID = os.getenv("TENANT_ID")
@@ -97,6 +103,44 @@ def list_files():
             return jsonify({"error": "Failed to retrieve drives", "details": drive_response.json()})
     else:
         return jsonify({"error": "Could not acquire token", "details": token_response})
+
+
+@app.route("/get-file-content")
+def get_file_content():
+    file_id = request.args.get("file_id")
+    if not file_id:
+        return jsonify({"error": "Missing file_id parameter"}), 400
+
+    token_response = get_access_token()
+    if "access_token" not in token_response:
+        return jsonify({"error": "Could not acquire token", "details": token_response}), 500
+
+    headers = {"Authorization": f"Bearer {token_response['access_token']}"}
+
+    # Replace with your actual drive ID
+    drive_id = "YOUR_DOCUMENTS_DRIVE_ID"
+    download_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}/content"
+
+    response = requests.get(download_url, headers=headers)
+    if response.status_code != 200:
+        return jsonify({"error": "Failed to download file", "details": response.json()}), response.status_code
+    content_type = response.headers.get("Content-Type", "")
+    file_bytes = BytesIO(response.content)
+
+    try:
+        if "pdf" in content_type:
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            text = "\n".join([page.get_text() for page in doc])
+        elif "wordprocessingml" in content_type or file_id.endswith(".docx"):
+            doc = Document(file_bytes)
+            text = "\n".join([para.text for para in doc.paragraphs])
+        else:
+            return jsonify({"error": "Unsupported file type", "content_type": content_type}), 415
+    except Exception as e:
+        return jsonify({"error": "Failed to extract content", "details": str(e)}), 500
+
+    return jsonify({"file_id": file_id, "content": text})
+
 
 
 if __name__ == "__main__":
