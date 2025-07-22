@@ -3,9 +3,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-from flask import Flask, jsonify
-from msal import ConfidentialClientApplication
+from flask import Flask, jsonify, request
 import requests
+from msal import ConfidentialClientApplication
 
 import mimetypes
 import fitz  # PyMuPDF
@@ -117,16 +117,34 @@ def get_file_content():
 
     headers = {"Authorization": f"Bearer {token_response['access_token']}"}
 
-    # Replace with your actual drive ID
-    drive_id = "YOUR_DOCUMENTS_DRIVE_ID"
+    
+# Step 1: Get the drive ID dynamically (same logic as in /list-files)
+    site_id = "canalwin.sharepoint.com,40ae91cc-e81a-43d7-b21c-cff0110b85b8,486e30a0-a11f-46ff-9c15-98583f506e92"
+    site_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives"
+    drive_response = requests.get(site_url, headers=headers)
+
+    if drive_response.status_code != 200:
+        return jsonify({"error": "Failed to retrieve drives", "details": drive_response.json()}), drive_response.status_code
+
+    drives = drive_response.json().get("value", [])
+    documents_drive = next((d for d in drives if d.get("name") == "Documents"), None)
+
+    if not documents_drive:
+        return jsonify({"error": "Documents library not found"}), 404
+
+    drive_id = documents_drive["id"]
+
+    # Step 2: Download the file
     download_url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{file_id}/content"
+    file_response = requests.get(download_url, headers=headers)
 
-    response = requests.get(download_url, headers=headers)
-    if response.status_code != 200:
-        return jsonify({"error": "Failed to download file", "details": response.json()}), response.status_code
-    content_type = response.headers.get("Content-Type", "")
-    file_bytes = BytesIO(response.content)
+    if file_response.status_code != 200:
+        return jsonify({"error": "Failed to download file", "details": file_response.text}), file_response.status_code
 
+    content_type = file_response.headers.get("Content-Type", "")
+    file_bytes = BytesIO(file_response.content)
+
+    # Step 3: Extract text based on file type
     try:
         if "pdf" in content_type:
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -135,12 +153,21 @@ def get_file_content():
             doc = Document(file_bytes)
             text = "\n".join([para.text for para in doc.paragraphs])
         else:
-            return jsonify({"error": "Unsupported file type", "content_type": content_type}), 415
+            return jsonify({
+                "error": "Unsupported file type",
+                "content_type": content_type
+            }), 415
     except Exception as e:
-        return jsonify({"error": "Failed to extract content", "details": str(e)}), 500
+        return jsonify({
+            "error": "Failed to extract content",
+            "details": str(e)
+        }), 500
 
-    return jsonify({"file_id": file_id, "content": text})
-
+    return jsonify({
+        "file_id": file_id,
+        "content_type": content_type,
+        "extracted_text": text
+    })
 
 
 if __name__ == "__main__":
